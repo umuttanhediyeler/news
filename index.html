@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Turkish Financial News</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'brand-blue': '#344f9e',
+              'dark-blue': '#2c4080',
+              'medium-blue': '#3e58a8',
+              'slate': '#8892b0',
+              'light-slate': '#a8b2d1',
+              'lightest-slate': '#ccd6f6',
+              'brand-orange': '#e84921',
+            }
+          }
+        }
+      }
+    </script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://aistudiocdn.com/react@^19.1.1",
+        "react/": "https://aistudiocdn.com/react@^19.1.1/",
+        "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+        "@google/genai": "https://aistudiocdn.com/@google/genai@^1.19.0"
+      }
+    }
+    </script>
+  </head>
+  <body class="bg-brand-blue">
+    <div id="root"></div>
+    <script type="text/babel" data-type="module">
+      // CDN Imports
+      import React, { useState, useEffect } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import { GoogleGenAI } from "@google/genai";
+
+      // --- services/geminiService.ts ---
+      const API_KEY = process.env.API_KEY;
+
+      const ai = new GoogleGenAI({ apiKey: API_KEY });
+
+      const fetchTurkishFinancialNews = async () => {
+        try {
+          const prompt = `
+            Act as a financial news expert. Fetch 8 of the most recent and significant financial news articles from Turkey.
+            Topics should include the stock market, foreign exchange, and commodities.
+            The "title" and "summary" MUST be in Turkish.
+            Your response MUST be ONLY a raw JSON array, starting with '[' and ending with ']'. Do not add any other text or markdown formatting.
+            Each JSON object in the array must contain:
+            - "title": The article headline, in Turkish.
+            - "summary": A concise, one-sentence summary, in Turkish.
+            - "url": The direct URL to the source article.
+          `;
+
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+              tools: [{googleSearch: {}}],
+              temperature: 0.5,
+            },
+          });
+          
+          const responseText = response.text?.trim();
+
+          if (!responseText) {
+            console.error("The AI model returned an empty response.");
+            throw new Error("Yapay zeka modeli boş bir yanıt döndürdü. Lütfen daha sonra tekrar deneyin.");
+          }
+
+          const startIndex = responseText.indexOf('[');
+          const endIndex = responseText.lastIndexOf(']');
+
+          if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
+            console.error("Could not find a valid JSON array in the model response.", { responseText });
+            throw new Error("Haber verileri yapay zeka modelinden ayrıştırılamadı. Format geçersizdi.");
+          }
+          
+          const jsonString = responseText.substring(startIndex, endIndex + 1);
+          
+          let articles;
+          try {
+              articles = JSON.parse(jsonString);
+          } catch (parseError) {
+              console.error("JSON parsing error:", parseError, { jsonString });
+              throw new Error("Haber verileri yapay zeka modelinden ayrıştırılamadı. Format geçersizdi.");
+          }
+
+
+          if (!Array.isArray(articles)) {
+            console.error("Parsed data is not an array:", { articles });
+            throw new Error("API geçerli bir makale dizisi döndürmedi.");
+          }
+          
+          return articles;
+
+        } catch (error) {
+          console.error("Error fetching Turkish financial news:", error);
+          if (error instanceof Error && (
+              error.message.startsWith("Haber verileri") || 
+              error.message.startsWith("API geçerli") ||
+              error.message.startsWith("Yapay zeka modeli")
+          )) {
+              throw error;
+          }
+          throw new Error("Yapay zeka modelinden haberler alınamadı. Lütfen API anahtarınızı ve bağlantınızı kontrol edin.");
+        }
+      };
+
+      const fetchArticleContent = async (url) => {
+        try {
+          const prompt = `
+            As an expert financial analyst, provide a detailed summary of the article at this URL: ${url}.
+            The summary must be in Turkish.
+            Include key data, financial figures, and any market implications mentioned.
+            Structure the summary into multiple paragraphs for clarity.
+            Your response should contain ONLY the Turkish summary text, with no extra titles or introductions.
+          `;
+          
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+              tools: [{googleSearch: {}}],
+              temperature: 0.2,
+            },
+          });
+
+          const content = response.text;
+          const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+          
+          const sources = groundingChunks
+              .map(chunk => chunk.web)
+              .filter((web) => !!web?.uri);
+
+          if (!content || content.trim().length < 20) {
+              throw new Error("Model, makale için yeterli içerik döndürmedi.");
+          }
+          
+          return { content, sources };
+        } catch(error) {
+          console.error(`Error fetching content for URL ${url}:`, error);
+          throw new Error("Makalenin tam içeriği alınamadı.");
+        }
+      }
+
+      // --- components/LoadingSpinner.tsx ---
+      const LoadingSpinner = () => {
+        return (
+          <div className="flex justify-center items-center py-20">
+            <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-brand-orange"></div>
+          </div>
+        );
+      };
+
+      // --- components/ErrorMessage.tsx ---
+      const ErrorMessage = ({ message }) => {
+        return (
+          <div className="bg-red-900/50 border border-red-600 text-red-100 px-4 py-3 rounded-md relative text-center" role="alert">
+            <strong className="font-bold">Hata!</strong>
+            <span className="block sm:inline ml-2">{message}</span>
+          </div>
+        );
+      };
+
+      // --- components/NewsCard.tsx ---
+      const NewsCard = ({ article, onSelect }) => {
+        return (
+          <button
+            onClick={() => onSelect(article)}
+            className="group bg-dark-blue rounded-lg shadow-lg overflow-hidden flex flex-col h-full text-left transition-transform duration-300 ease-in-out hover:-translate-y-1 hover:shadow-2xl hover:shadow-brand-orange/10 w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-orange p-5"
+            aria-label={`Read more about ${article.title}`}
+          >
+            <h2 className="text-lg font-bold text-lightest-slate mb-2 flex-grow">
+              {article.title}
+            </h2>
+            <p className="text-slate text-sm mb-4">
+              {article.summary}
+            </p>
+            <div className="mt-auto">
+              <span
+                className="inline-block text-lightest-slate font-medium py-2 px-4 border border-lightest-slate rounded-md group-hover:text-brand-orange group-hover:border-brand-orange transition-colors duration-300 text-sm"
+              >
+                Daha Fazla Oku
+              </span>
+            </div>
+          </button>
+        );
+      };
+
+      // --- components/NewsDetail.tsx ---
+      const NewsDetail = ({ article, isLoading, error, onClose }) => {
+        const [isShowing, setIsShowing] = useState(false);
+
+        useEffect(() => {
+          const timer = setTimeout(() => setIsShowing(true), 10);
+          return () => clearTimeout(timer);
+        }, []);
+
+        useEffect(() => {
+          const handleKeyDown = (event) => {
+            if (event.key === 'Escape') {
+              handleClose();
+            }
+          };
+          window.addEventListener('keydown', handleKeyDown);
+          return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+          };
+        }, [onClose]);
+
+        const handleClose = () => {
+          setIsShowing(false);
+          setTimeout(onClose, 300); // Wait for animation to complete
+        };
+
+        return (
+          <div
+            className={`fixed inset-0 z-40 transition-opacity duration-300 ease-in-out ${isShowing ? 'opacity-100' : 'opacity-0'}`}
+            onClick={handleClose}
+            aria-modal="true"
+            role="dialog"
+            aria-labelledby="article-title"
+          >
+            <div className="absolute inset-0 bg-brand-blue/80 backdrop-blur-sm" />
+            <div
+              className={`fixed inset-y-0 right-0 w-full max-w-2xl bg-dark-blue shadow-2xl z-50 transform transition-transform duration-300 ease-in-out flex flex-col ${isShowing ? 'translate-x-0' : 'translate-x-full'}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="p-4 flex items-center justify-between border-b border-lightest-slate/20 flex-shrink-0">
+                <h2 id="article-title" className="text-xl font-bold text-lightest-slate pr-4">{article.title}</h2>
+                <button
+                  onClick={handleClose}
+                  className="p-2 rounded-full text-slate hover:bg-medium-blue hover:text-brand-orange transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-orange"
+                  aria-label="Makaleyi kapat"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </header>
+              <div className="overflow-y-auto p-6 flex-grow">
+                {isLoading && <LoadingSpinner />}
+                {error && <ErrorMessage message={error} />}
+                {article.content && (
+                  <div className="text-light-slate space-y-4">
+                    {article.content.split('\n').filter(p => p.trim() !== '').map((paragraph, index) => (
+                      <p key={index}>{paragraph}</p>
+                    ))}
+                  </div>
+                )}
+                {article.sources && article.sources.length > 0 && (
+                  <div className="mt-8 pt-4 border-t border-lightest-slate/20">
+                    <h3 className="text-lg font-semibold text-slate mb-3">Kaynaklar</h3>
+                    <ul className="list-disc list-inside space-y-2">
+                      {article.sources.map((source, index) => (
+                        <li key={index} className="text-sm truncate">
+                          <a href={source.uri} target="_blank" rel="noopener noreferrer" className="text-brand-orange hover:underline">
+                            {source.title || source.uri}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      };
+      
+      // --- App.tsx ---
+      const App = () => {
+        const [articles, setArticles] = useState([]);
+        const [isLoading, setIsLoading] = useState(true);
+        const [error, setError] = useState(null);
+
+        const [selectedArticle, setSelectedArticle] = useState(null);
+        const [isDetailLoading, setIsDetailLoading] = useState(false);
+        const [detailError, setDetailError] = useState(null);
+
+        useEffect(() => {
+          const getNews = async () => {
+            try {
+              setIsLoading(true);
+              setError(null);
+              const newsArticles = await fetchTurkishFinancialNews();
+              setArticles(newsArticles);
+            } catch (err) {
+              if (err instanceof Error) {
+                setError(err.message);
+              } else {
+                setError('Bilinmeyen bir hata oluştu.');
+              }
+            } finally {
+              setIsLoading(false);
+            }
+          };
+
+          getNews();
+        }, []);
+
+        useEffect(() => {
+          if (selectedArticle) {
+            document.body.style.overflow = 'hidden';
+          } else {
+            document.body.style.overflow = 'auto';
+          }
+          return () => {
+            document.body.style.overflow = 'auto';
+          };
+        }, [selectedArticle]);
+
+
+        const handleSelectArticle = async (article) => {
+          setSelectedArticle(article);
+          if (article.content) return;
+
+          setIsDetailLoading(true);
+          setDetailError(null);
+          try {
+            const { content, sources } = await fetchArticleContent(article.url);
+            const updatedArticle = { ...article, content, sources };
+            setSelectedArticle(updatedArticle);
+            setArticles(prevArticles => 
+              prevArticles.map(a => a.url === article.url ? updatedArticle : a)
+            );
+          } catch (err) {
+            if (err instanceof Error) {
+              setDetailError(err.message);
+            } else {
+              setDetailError('Makale alınırken bilinmeyen bir hata oluştu.');
+            }
+          } finally {
+            setIsDetailLoading(false);
+          }
+        };
+
+        const handleCloseDetail = () => {
+          setSelectedArticle(null);
+        };
+
+        const renderContent = () => {
+          if (isLoading) {
+            return <LoadingSpinner />;
+          }
+          if (error) {
+            return <ErrorMessage message={error} />;
+          }
+          if (articles.length === 0) {
+            return <p className="text-center text-slate">Haber bulunamadı.</p>;
+          }
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 lg:gap-8">
+              {articles.map((article, index) => (
+                <NewsCard key={index} article={article} onSelect={handleSelectArticle} />
+              ))}
+            </div>
+          );
+        };
+
+        return (
+          <div className="min-h-screen bg-brand-blue font-sans text-lightest-slate relative overflow-x-hidden">
+            <main className="container mx-auto p-4 md:p-6 lg:p-8 pt-8 md:pt-12">
+              {renderContent()}
+            </main>
+            <footer className="text-center py-4 mt-8">
+              <p className="text-slate text-sm">
+                Gemini API ve Google Arama ile güçlendirilmiştir. Özetler yapay zeka tarafından oluşturulmuştur.
+              </p>
+            </footer>
+            
+            {selectedArticle && (
+              <NewsDetail 
+                article={selectedArticle}
+                isLoading={isDetailLoading}
+                error={detailError}
+                onClose={handleCloseDetail}
+              />
+            )}
+          </div>
+        );
+      };
+
+      // --- index.tsx ---
+      const rootElement = document.getElementById('root');
+      if (!rootElement) {
+        throw new Error("Could not find root element to mount to");
+      }
+
+      const root = ReactDOM.createRoot(rootElement);
+      root.render(
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>
+      );
+    </script>
+  </body>
+</html>

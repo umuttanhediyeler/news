@@ -1,0 +1,5 @@
+{
+  "name": "Turkish Financial News",
+  "description": "A mobile-first application that displays the latest financial news from Turkey, optimized for all devices.",
+  "requestFramePermissions": []
+}
